@@ -9,7 +9,7 @@ const normalizeProfile = (profile) => {
 const getConfig = (profile) => {
   if (normalizeProfile(profile) === "uat") {
     return {
-      host: process.env.MYSQL_UAT_HOST || "localhost",
+      host: process.env.MYSQL_UAT_HOST || "127.0.0.1",
       port: Number(process.env.MYSQL_UAT_PORT || 3306),
       user: process.env.MYSQL_UAT_USER || "zoneUat",
       password: process.env.MYSQL_UAT_PASSWORD || "",

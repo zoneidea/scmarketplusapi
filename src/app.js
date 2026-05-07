@@ -10,9 +10,16 @@ const { notFound, errorHandler } = require("./middleware/error.middleware");
 
 const app = express();
 
+const captureRawBody = (req, res, buf) => {
+  if (buf && buf.length) {
+    req.rawBody = buf.toString("utf8");
+  }
+};
+
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb", verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
+app.use(express.text({ type: "*/*", limit: "1mb", verify: captureRawBody }));
 
 app.use("/health", healthRoutes);
 app.use("/CallbackPaymentNotifyURL", paymentRoutes);

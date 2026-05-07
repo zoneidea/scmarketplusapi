@@ -5,39 +5,209 @@ const boothLockService = require("./boothLock.service");
 const notificationService = require("./notification.service");
 
 const CALLBACK_CONTROLLER = "CallbackPaymentNotifyURL";
+const RAW_LOG_TABLE = "payment_notify_raw_logs";
+let notifyTableColumnSet = null;
+let rawLogTableReady = false;
 
 const issetParam = (value) => (value === undefined || value === null ? "" : value);
 
+const safeJsonStringify = (value) => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value ?? {}, (key, currentValue) =>
+      typeof currentValue === "bigint" ? currentValue.toString() : currentValue
+    );
+  } catch (error) {
+    return JSON.stringify({
+      stringify_error: error.message,
+      value_type: typeof value,
+    });
+  }
+};
+
+const parseJsonObject = (value) => {
+  if (typeof value !== "string") {
+    return value && typeof value === "object" ? value : null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const normalizeIncomingPayload = (payload = {}, rawBody = "") => {
+  if (payload && typeof payload === "object" && !Buffer.isBuffer(payload)) {
+    return payload;
+  }
+
+  return parseJsonObject(payload) || parseJsonObject(rawBody) || {};
+};
+
+const valueFromDataOrPayload = (payload, data, key) => {
+  if (data && Object.prototype.hasOwnProperty.call(data, key)) {
+    return data[key];
+  }
+
+  return payload[key];
+};
+
 const normalizePaymentPayload = (payload = {}) => {
-  const data = payload.data || {};
+  const data = parseJsonObject(payload.data) || payload.data || {};
 
   return {
     code: issetParam(payload.code),
     msg: issetParam(payload.msg),
     message: issetParam(payload.message),
     sign: issetParam(payload.sign),
-    appid: issetParam(data.appid),
-    attach: issetParam(data.attach),
-    cash_fee: issetParam(data.cash_fee),
-    cash_fee_type: issetParam(data.cash_fee_type),
-    channel: issetParam(data.channel),
-    channel_order_no: issetParam(data.channel_order_no),
-    fee_type: issetParam(data.fee_type),
-    ksher_order_no: issetParam(data.ksher_order_no),
-    mch_order_no: issetParam(data.mch_order_no),
-    nonce_str: issetParam(data.nonce_str),
-    openid: issetParam(data.openid),
-    pay_mch_order_no: issetParam(data.pay_mch_order_no),
-    rate: issetParam(data.rate),
-    result: String(issetParam(data.result)).toUpperCase(),
-    time_end: issetParam(data.time_end),
-    total_fee: issetParam(data.total_fee),
+    appid: issetParam(valueFromDataOrPayload(payload, data, "appid")),
+    attach: issetParam(valueFromDataOrPayload(payload, data, "attach")),
+    cash_fee: issetParam(valueFromDataOrPayload(payload, data, "cash_fee")),
+    cash_fee_type: issetParam(valueFromDataOrPayload(payload, data, "cash_fee_type")),
+    channel: issetParam(valueFromDataOrPayload(payload, data, "channel")),
+    channel_order_no: issetParam(
+      valueFromDataOrPayload(payload, data, "channel_order_no")
+    ),
+    fee_type: issetParam(valueFromDataOrPayload(payload, data, "fee_type")),
+    ksher_order_no: issetParam(valueFromDataOrPayload(payload, data, "ksher_order_no")),
+    lang: issetParam(valueFromDataOrPayload(payload, data, "lang")),
+    mch_order_no: issetParam(valueFromDataOrPayload(payload, data, "mch_order_no")),
+    nonce_str: issetParam(valueFromDataOrPayload(payload, data, "nonce_str")),
+    openid: issetParam(valueFromDataOrPayload(payload, data, "openid")),
+    pay_mch_order_no: issetParam(
+      valueFromDataOrPayload(payload, data, "pay_mch_order_no")
+    ),
+    rate: issetParam(valueFromDataOrPayload(payload, data, "rate")),
+    result: String(
+      issetParam(valueFromDataOrPayload(payload, data, "result"))
+    ).toUpperCase(),
+    time_end: issetParam(valueFromDataOrPayload(payload, data, "time_end")),
+    total_fee: issetParam(valueFromDataOrPayload(payload, data, "total_fee")),
   };
 };
 
+const getNotifyTableColumns = async (connection) => {
+  if (!notifyTableColumnSet) {
+    const [rows] = await connection.execute("SHOW COLUMNS FROM payment_notify_transaction");
+    notifyTableColumnSet = new Set(rows.map((row) => row.Field));
+  }
+
+  return notifyTableColumnSet;
+};
+
+const ensureRawLogTable = async (connection) => {
+  if (rawLogTableReady) {
+    return;
+  }
+
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS ${RAW_LOG_TABLE} (
+      raw_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      event_name VARCHAR(50) NOT NULL DEFAULT 'received',
+      controller VARCHAR(100) NOT NULL DEFAULT '',
+      database_profile VARCHAR(50) NOT NULL DEFAULT '',
+      request_method VARCHAR(16) NOT NULL DEFAULT '',
+      request_url VARCHAR(500) NOT NULL DEFAULT '',
+      request_path VARCHAR(255) NOT NULL DEFAULT '',
+      request_ip VARCHAR(100) NOT NULL DEFAULT '',
+      remote_address VARCHAR(100) NOT NULL DEFAULT '',
+      content_type VARCHAR(255) NOT NULL DEFAULT '',
+      user_agent VARCHAR(500) NOT NULL DEFAULT '',
+      headers_json LONGTEXT NULL,
+      query_json LONGTEXT NULL,
+      params_json LONGTEXT NULL,
+      body_type VARCHAR(50) NOT NULL DEFAULT '',
+      body_json LONGTEXT NULL,
+      raw_body LONGTEXT NULL,
+      payload_json LONGTEXT NULL,
+      normalized_json LONGTEXT NULL,
+      error_message LONGTEXT NULL,
+      error_stack LONGTEXT NULL,
+      date_create DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (raw_id),
+      KEY idx_date_create (date_create),
+      KEY idx_controller (controller),
+      KEY idx_event_name (event_name),
+      KEY idx_database_profile (database_profile)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  rawLogTableReady = true;
+};
+
+const insertRawNotifyLog = async (connection, data = {}) => {
+  await ensureRawLogTable(connection);
+
+  const request = data.request || {};
+  const headers = request.headers || {};
+
+  await connection.execute(
+    `INSERT INTO ${RAW_LOG_TABLE} (
+       event_name,
+       controller,
+       database_profile,
+       request_method,
+       request_url,
+       request_path,
+       request_ip,
+       remote_address,
+       content_type,
+       user_agent,
+       headers_json,
+       query_json,
+       params_json,
+       body_type,
+       body_json,
+       raw_body,
+       payload_json,
+       normalized_json,
+       error_message,
+       error_stack,
+       date_create
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+    [
+      data.eventName || "received",
+      data.controller || CALLBACK_CONTROLLER,
+      data.databaseProfile || "",
+      request.method || "",
+      request.originalUrl || "",
+      request.path || "",
+      request.ip || "",
+      request.remoteAddress || "",
+      headers["content-type"] || "",
+      headers["user-agent"] || "",
+      safeJsonStringify(headers),
+      safeJsonStringify(request.query || {}),
+      safeJsonStringify(request.params || {}),
+      request.bodyType || "",
+      safeJsonStringify(data.body),
+      data.rawBody || "",
+      safeJsonStringify(data.payload),
+      safeJsonStringify(data.normalized),
+      data.error?.message || "",
+      data.error?.stack || "",
+    ]
+  );
+};
+
+const tryInsertRawNotifyLog = async (connection, data = {}) => {
+  try {
+    await insertRawNotifyLog(connection, data);
+  } catch (error) {
+    console.error(`Raw payment notify log failed: ${error.message}`);
+  }
+};
+
 const insertNotifyLog = async (connection, data) => {
+  const tableColumns = await getNotifyTableColumns(connection);
   const columns = [
     "code",
+    "lang",
     "msg",
     "message",
     "sign",
@@ -59,15 +229,18 @@ const insertNotifyLog = async (connection, data) => {
     "total_fee",
     "json",
     "controller",
-  ];
+  ].filter((column) => tableColumns.has(column));
 
   const values = columns.map((column) => data[column] ?? "");
   const placeholders = columns.map(() => "?").join(", ");
+  const hasDateCreate = tableColumns.has("date_create");
+  const dateColumn = hasDateCreate ? ", date_create" : "";
+  const dateValue = hasDateCreate ? ", NOW()" : "";
 
   await connection.execute(
     `INSERT INTO payment_notify_transaction (${columns.join(
       ", "
-    )}, date_create) VALUES (${placeholders}, NOW())`,
+    )}${dateColumn}) VALUES (${placeholders}${dateValue})`,
     values
   );
 };
@@ -236,13 +409,36 @@ const handleFailed = async (connection, transactionRows) => {
 const handlePaymentNotify = async (payload = {}, options = {}) => {
   const host = os.hostname();
   const ip = getLocalIp();
-  const rawBody = options.rawBody || JSON.stringify(payload || {});
-  const normalized = normalizePaymentPayload(payload);
+  const rawBody =
+    options.rawBody ||
+    (typeof payload === "string" ? payload : JSON.stringify(payload || {}));
   const connection = await getPool(options.databaseProfile).getConnection();
-  let committed = false;
+
+  await tryInsertRawNotifyLog(connection, {
+    eventName: "received",
+    controller: CALLBACK_CONTROLLER,
+    databaseProfile: options.databaseProfile || "",
+    request: options.request,
+    body: payload,
+    payload,
+    rawBody,
+  });
+
+  const parsedPayload = normalizeIncomingPayload(payload, rawBody);
+  const normalized = normalizePaymentPayload(parsedPayload);
+  let transactionStarted = false;
 
   try {
-    await connection.beginTransaction();
+    await tryInsertRawNotifyLog(connection, {
+      eventName: "normalized",
+      controller: CALLBACK_CONTROLLER,
+      databaseProfile: options.databaseProfile || "",
+      request: options.request,
+      body: payload,
+      payload: parsedPayload,
+      normalized,
+      rawBody,
+    });
 
     await insertNotifyLog(connection, {
       ...normalized,
@@ -251,8 +447,6 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
     });
 
     if (!normalized.mch_order_no) {
-      await connection.commit();
-      committed = true;
       return {
         result: "FAIL",
         msg: "JSON not have a mch_order_no data.",
@@ -267,13 +461,14 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
     );
 
     if (transactionRows.length === 0) {
-      await connection.commit();
-      committed = true;
       return {
         result: "SUCCESS",
         msg: "OK",
       };
     }
+
+    await connection.beginTransaction();
+    transactionStarted = true;
 
     const success = isPaymentSuccess(normalized.code, normalized.result);
     const memberId = success
@@ -281,7 +476,7 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
       : await handleFailed(connection, transactionRows);
 
     await connection.commit();
-    committed = true;
+    transactionStarted = false;
 
     const token = await getFCMToken(connection, memberId);
     await notifyMember(token, normalized.mch_order_no, {
@@ -296,9 +491,22 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
       msg: "OK",
     };
   } catch (error) {
-    if (!committed) {
+    if (transactionStarted) {
       await connection.rollback();
+      transactionStarted = false;
     }
+
+    await tryInsertRawNotifyLog(connection, {
+      eventName: "exception",
+      controller: CALLBACK_CONTROLLER,
+      databaseProfile: options.databaseProfile || "",
+      request: options.request,
+      body: payload,
+      payload: parsedPayload,
+      normalized,
+      rawBody,
+      error,
+    });
 
     await insertNotifyLog(connection, {
       ...emptyNotifyLog(),
@@ -322,6 +530,7 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
 
 const emptyNotifyLog = () => ({
   code: "",
+  lang: "",
   msg: "",
   message: "",
   sign: "",

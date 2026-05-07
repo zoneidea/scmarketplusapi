@@ -9,7 +9,20 @@ router.post("/", async (req, res) => {
   try {
     result = await paymentService.handlePaymentNotify(req.body, {
       databaseProfile: req.databaseProfile,
-      rawBody: JSON.stringify(req.body || {}),
+      rawBody:
+        req.rawBody ||
+        (typeof req.body === "string" ? req.body : JSON.stringify(req.body || {})),
+      request: {
+        method: req.method,
+        originalUrl: req.originalUrl,
+        path: req.path,
+        ip: req.ip,
+        remoteAddress: req.socket?.remoteAddress || "",
+        headers: req.headers,
+        query: req.query,
+        params: req.params,
+        bodyType: Array.isArray(req.body) ? "array" : typeof req.body,
+      },
     });
   } catch (error) {
     result = {
