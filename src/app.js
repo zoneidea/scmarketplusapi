@@ -17,6 +17,22 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/health", healthRoutes);
 app.use("/CallbackPaymentNotifyURL", paymentRoutes);
 app.use("/api/payments/callback", paymentRoutes);
+app.use(
+  "/uat/CallbackPaymentNotifyURL",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  paymentRoutes
+);
+app.use(
+  "/api/uat/payments/callback",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  paymentRoutes
+);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/firestore", firestoreRoutes);
 app.use("/api/booth-locks", boothLockRoutes);

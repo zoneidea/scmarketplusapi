@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const app = require("./app");
-const { pool } = require("./config/mysql");
+const { closePools } = require("./config/mysql");
 require("./config/firebase");
 
 const port = Number(process.env.PORT || 3000);
@@ -13,7 +13,7 @@ const server = app.listen(port, () => {
 const shutdown = async (signal) => {
   console.log(`${signal} received. Shutting down...`);
   server.close(async () => {
-    await pool.end();
+    await closePools();
     process.exit(0);
   });
 };

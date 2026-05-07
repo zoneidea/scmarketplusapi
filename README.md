@@ -23,8 +23,11 @@ npm run check
 ## Endpoints
 
 - `GET /health`
+- `GET /health/uat`
 - `POST /CallbackPaymentNotifyURL`
 - `POST /api/payments/callback`
+- `POST /uat/CallbackPaymentNotifyURL`
+- `POST /api/uat/payments/callback`
 - `POST /api/notifications/send`
 - `PATCH /api/firestore/:collection/:documentId`
 - `PATCH /api/booth-locks/:boothId/:date`

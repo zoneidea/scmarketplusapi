@@ -8,6 +8,7 @@ router.post("/", async (req, res) => {
 
   try {
     result = await paymentService.handlePaymentNotify(req.body, {
+      databaseProfile: req.databaseProfile,
       rawBody: JSON.stringify(req.body || {}),
     });
   } catch (error) {

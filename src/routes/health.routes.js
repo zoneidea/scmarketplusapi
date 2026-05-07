@@ -1,18 +1,20 @@
 const express = require("express");
-const { pool } = require("../config/mysql");
+const { getPool, normalizeProfile } = require("../config/mysql");
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+const healthCheck = async (req, res) => {
+  const profile = normalizeProfile(req.params.profile);
   const result = {
     success: true,
     service: "scmarketplusapi",
+    profile,
     database: "unknown",
     timestamp: new Date().toISOString(),
   };
 
   try {
-    await pool.query("SELECT 1");
+    await getPool(profile).query("SELECT 1");
     result.database = "connected";
   } catch (error) {
     result.database = "unavailable";
@@ -20,6 +22,9 @@ router.get("/", async (req, res) => {
   }
 
   res.json(result);
-});
+};
+
+router.get("/", healthCheck);
+router.get("/:profile", healthCheck);
 
 module.exports = router;

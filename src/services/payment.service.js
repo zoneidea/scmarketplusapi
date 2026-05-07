@@ -1,6 +1,6 @@
 const os = require("os");
 
-const { pool } = require("../config/mysql");
+const { getPool } = require("../config/mysql");
 const boothLockService = require("./boothLock.service");
 const notificationService = require("./notification.service");
 
@@ -238,7 +238,7 @@ const handlePaymentNotify = async (payload = {}, options = {}) => {
   const ip = getLocalIp();
   const rawBody = options.rawBody || JSON.stringify(payload || {});
   const normalized = normalizePaymentPayload(payload);
-  const connection = await pool.getConnection();
+  const connection = await getPool(options.databaseProfile).getConnection();
   let committed = false;
 
   try {
