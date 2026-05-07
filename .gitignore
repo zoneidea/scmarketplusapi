@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+npm-debug.log*
+firebase-service-account*.json
+sc-market-plus-firebase.json
