@@ -1,7 +1,9 @@
+const crypto = require("crypto");
 const os = require("os");
 
 const { getPool } = require("../config/mysql");
 const boothLockService = require("./boothLock.service");
+const ksherService = require("./ksher.service");
 const notificationService = require("./notification.service");
 
 const CALLBACK_CONTROLLER = "CallbackPaymentNotifyURL";
@@ -247,6 +249,329 @@ const insertNotifyLog = async (connection, data) => {
 
 const isPaymentSuccess = (code, result) => {
   return Number(code) === 0 && String(result).toUpperCase() === "SUCCESS";
+};
+
+const toArray = (value) => {
+  return Array.isArray(value) ? value : [value];
+};
+
+const isBlank = (value) => {
+  return value === undefined || value === null || value === "";
+};
+
+const normalizeIdArray = (value) => {
+  return toArray(value).filter((item) => !isBlank(item));
+};
+
+const buildInClause = (values) => {
+  return values.map(() => "?").join(", ");
+};
+
+const rowMapBy = (rows, key) => {
+  return new Map(rows.map((row) => [String(row[key]), row]));
+};
+
+const getBangkokYearMonth = () => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: process.env.PAYMENT_TIME_ZONE || "Asia/Bangkok",
+    year: "2-digit",
+    month: "2-digit",
+  }).formatToParts(new Date());
+
+  const year = parts.find((part) => part.type === "year")?.value || "";
+  const month = parts.find((part) => part.type === "month")?.value || "";
+
+  return `${year}${month}`;
+};
+
+const generateTransactionId = () => {
+  return `T${getBangkokYearMonth()}${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+};
+
+const getBaseUrl = (baseUrl = "") => {
+  const resolved = process.env.PAYMENT_PUBLIC_BASE_URL || baseUrl || "";
+  return resolved.endsWith("/") ? resolved : `${resolved}/`;
+};
+
+const buildGatewayPayData = ({ transId, amount, baseUrl }) => {
+  const resolvedBaseUrl = getBaseUrl(baseUrl);
+
+  return {
+    mch_order_no: transId,
+    total_fee: Math.round(Number(amount || 0) * 100),
+    fee_type: "THB",
+    channel_list:
+      process.env.KSHER_CHANNEL_LIST || "promptpay,truemoney,linepay,card,scb_easy",
+    mch_code: transId,
+    mch_redirect_url: `${resolvedBaseUrl}CallbackPaymentSuccessURL?TransID=${transId}`,
+    mch_redirect_url_fail: `${resolvedBaseUrl}CallbackPaymentFailedURL?TransID=${transId}`,
+    product_name: process.env.KSHER_PRODUCT_NAME || "จองบูธ SC MARKET",
+    lang: process.env.KSHER_LANG || "th",
+    refer_url: process.env.KSHER_REFER_URL || "http://www.ksher.cn",
+    mch_notify_url:
+      process.env.KSHER_NOTIFY_URL || "https://api.scmarketplus.com/CallbackPaymentNotifyURL",
+    device: process.env.KSHER_DEVICE || "H5",
+  };
+};
+
+const validateBookings = async (connection, bookingIds) => {
+  if (bookingIds.length === 0) {
+    return { marketId: "" };
+  }
+
+  const [rows] = await connection.execute(
+    `SELECT booking_id, booking_market_id
+     FROM btbooking
+     WHERE booking_id IN (${buildInClause(bookingIds)}) AND booking_status_id = 2`,
+    bookingIds
+  );
+  const bookingsById = rowMapBy(rows, "booking_id");
+  let marketId = "";
+
+  for (const bookingId of bookingIds) {
+    const booking = bookingsById.get(String(bookingId));
+
+    if (!booking) {
+      return {
+        error: {
+          status: "fail",
+          message: `เลขที่การจอง ${bookingId} หมดเวลาในการชำระเงินแล้ว!`,
+          data: "",
+        },
+      };
+    }
+
+    if (marketId === "") {
+      marketId = booking.booking_market_id;
+      continue;
+    }
+
+    if (String(marketId) !== String(booking.booking_market_id)) {
+      return {
+        error: {
+          status: "fail",
+          message: "คุณไม่สามารถชำระค่าจองของ 2 ตึก พร้อมกันได้ กรุณาทำรายการใหม่!",
+          data: "",
+        },
+      };
+    }
+
+    marketId = booking.booking_market_id;
+  }
+
+  return { marketId };
+};
+
+const resolveChargeMarketId = async (connection, chargeIds, currentMarketId) => {
+  if (chargeIds.length === 0) {
+    return currentMarketId;
+  }
+
+  const [rows] = await connection.execute(
+    `SELECT acd.keyId, b.booking_market_id
+     FROM audit_checker_details AS acd
+     LEFT JOIN btbooking AS b ON acd.booking_id = b.booking_id
+     WHERE acd.keyId IN (${buildInClause(chargeIds)})`,
+    chargeIds
+  );
+  const chargesById = rowMapBy(rows, "keyId");
+  let marketId = currentMarketId;
+
+  for (const chargeId of chargeIds) {
+    const charge = chargesById.get(String(chargeId));
+
+    if (!charge) {
+      throw new Error(`ไม่พบรายการค่าใช้จ่าย ${chargeId}`);
+    }
+
+    marketId = charge.booking_market_id;
+  }
+
+  return marketId;
+};
+
+const getMerchantCredentials = async (connection, marketId) => {
+  const [rows] = await connection.execute(
+    `SELECT bb.mch_id, bb.privatekey
+     FROM btmarketinformation AS mi
+     LEFT JOIN btbu AS bb ON mi.bu_Id = bb.bu_Id
+     WHERE mi.mi_Id = ?`,
+    [marketId || ""]
+  );
+
+  return rows[0] || null;
+};
+
+const insertTransactionDetails = async (connection, { transId, bookingIds, chargeIds, memberId }) => {
+  if (bookingIds.length > 0) {
+    const placeholders = bookingIds.map(() => "(?, ?, 'Booking', NOW(), NOW(), ?)").join(", ");
+    const params = bookingIds.flatMap((bookingId) => [transId, bookingId, memberId]);
+
+    await connection.execute(
+      `INSERT INTO transaction_details (
+         trans_id,
+         booking_id,
+         CartType,
+         date_create,
+         date_modify,
+         mb_id
+       ) VALUES ${placeholders}`,
+      params
+    );
+
+    await connection.execute(
+      `UPDATE btbooking
+       SET booking_status_id = 5
+       WHERE booking_id IN (${buildInClause(bookingIds)})`,
+      bookingIds
+    );
+  }
+
+  if (chargeIds.length > 0) {
+    const placeholders = chargeIds.map(() => "(?, ?, 'Charge', NOW(), NOW(), ?)").join(", ");
+    const params = chargeIds.flatMap((chargeId) => [transId, chargeId, memberId]);
+
+    await connection.execute(
+      `INSERT INTO transaction_details (
+         trans_id,
+         keyId,
+         CartType,
+         date_create,
+         date_modify,
+         mb_id
+       ) VALUES ${placeholders}`,
+      params
+    );
+
+    await connection.execute(
+      `UPDATE audit_checker_details
+       SET status_price = 'Waiting'
+       WHERE keyId IN (${buildInClause(chargeIds)})`,
+      chargeIds
+    );
+  }
+};
+
+const createTransactionPayment = async (payload = {}, options = {}) => {
+  const bookingIds = normalizeIdArray(payload.booking_id);
+  const chargeIds = normalizeIdArray(payload.charge_id);
+  const couponId = isBlank(payload.coupon_id) ? 0 : payload.coupon_id;
+  const amount = payload.amount;
+  const memberId = payload.mb_Id;
+  const connection = await getPool(options.databaseProfile).getConnection();
+
+  try {
+    const bookingValidation = await validateBookings(connection, bookingIds);
+    if (bookingValidation.error) {
+      return bookingValidation.error;
+    }
+
+    const marketId = await resolveChargeMarketId(
+      connection,
+      chargeIds,
+      bookingValidation.marketId
+    );
+    const merchant = await getMerchantCredentials(connection, marketId);
+
+    if (!merchant) {
+      return {
+        status: "fail",
+        message: "mch id ไม่ถูกต้องกรุณาติดต่อแอดมิน",
+        data: "",
+      };
+    }
+
+    const transId = generateTransactionId();
+    const privateKey = ksherService.readPrivateKey(merchant.mch_id, merchant.privatekey);
+    const gatewayPayData = buildGatewayPayData({
+      transId,
+      amount,
+      baseUrl: options.baseUrl,
+    });
+    const gatewayResponse = await ksherService.gatewayPay({
+      appid: merchant.mch_id,
+      privateKey,
+      data: gatewayPayData,
+    });
+    const gatewayPayArray =
+      typeof gatewayResponse.data === "string"
+        ? parseJsonObject(gatewayResponse.data)
+        : gatewayResponse.data;
+    const payContent = gatewayPayArray?.data?.pay_content;
+
+    if (!payContent) {
+      return {
+        status: "fail",
+        message: "Fail to create Redirect Order",
+        data: gatewayResponse.raw,
+      };
+    }
+
+    await connection.beginTransaction();
+
+    try {
+      await connection.execute(
+        `INSERT INTO transaction_master (
+           trans_id,
+           mch_pay_content,
+           mch_sign,
+           mch_msg,
+           mch_message,
+           mch_code,
+           amount,
+           date_create,
+           date_modify,
+           mb_id,
+           coupon_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?)`,
+        [
+          transId,
+          payContent,
+          gatewayPayArray.sign,
+          gatewayPayArray.msg,
+          gatewayPayArray.message,
+          gatewayPayArray.code,
+          amount,
+          memberId,
+          couponId,
+        ]
+      );
+
+      await insertTransactionDetails(connection, {
+        transId,
+        bookingIds,
+        chargeIds,
+        memberId,
+      });
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+
+      return {
+        status: "failed",
+        message: "บันทึกไม่สำเร็จ!",
+        data: error.message,
+      };
+    }
+
+    return {
+      status: "success",
+      message: "บันทึกสำเร็จ!",
+      TransID: transId,
+      gateway_pay_data: gatewayPayData,
+      mch_code: gatewayPayArray.code,
+      pay_content: payContent,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      message: error.message,
+      data: null,
+    };
+  } finally {
+    connection.release();
+  }
 };
 
 const getFCMToken = async (connection, memberId) => {
@@ -569,5 +894,6 @@ const getLocalIp = () => {
 };
 
 module.exports = {
+  createTransactionPayment,
   handlePaymentNotify,
 };

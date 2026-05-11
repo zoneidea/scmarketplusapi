@@ -5,6 +5,7 @@ const healthRoutes = require("./routes/health.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const firestoreRoutes = require("./routes/firestore.routes");
 const paymentRoutes = require("./routes/payment.routes");
+const createTransactionPaymentRoutes = require("./routes/createTransactionPayment.routes");
 const boothLockRoutes = require("./routes/boothLock.routes");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 
@@ -22,8 +23,26 @@ app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 app.use(express.text({ type: "*/*", limit: "1mb", verify: captureRawBody }));
 
 app.use("/health", healthRoutes);
+app.use("/CreateTransactionPayment", createTransactionPaymentRoutes);
+app.use("/api/payments/create-transaction", createTransactionPaymentRoutes);
 app.use("/CallbackPaymentNotifyURL", paymentRoutes);
 app.use("/api/payments/callback", paymentRoutes);
+app.use(
+  "/uat/CreateTransactionPayment",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  createTransactionPaymentRoutes
+);
+app.use(
+  "/api/uat/payments/create-transaction",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  createTransactionPaymentRoutes
+);
 app.use(
   "/uat/CallbackPaymentNotifyURL",
   (req, res, next) => {

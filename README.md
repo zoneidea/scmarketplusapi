@@ -24,6 +24,10 @@ npm run check
 
 - `GET /health`
 - `GET /health/uat`
+- `POST /CreateTransactionPayment`
+- `POST /api/payments/create-transaction`
+- `POST /uat/CreateTransactionPayment`
+- `POST /api/uat/payments/create-transaction`
 - `POST /CallbackPaymentNotifyURL`
 - `POST /api/payments/callback`
 - `POST /uat/CallbackPaymentNotifyURL`
@@ -50,6 +54,22 @@ npm run check
   }
 }
 ```
+
+## Create Transaction Payment
+
+`POST /CreateTransactionPayment` keeps the same input parameters as the old PHP controller:
+
+```json
+{
+  "booking_id": [123],
+  "charge_id": [],
+  "coupon_id": "",
+  "amount": 100,
+  "mb_Id": 1
+}
+```
+
+Place Ksher private keys in `ksher_pay/` using the old filename format. For example, `mch44620` must use `ksher_pay/Mch44620_PrivateKey.pem`, and `mch44622` must use `ksher_pay/Mch44622_PrivateKey.pem`. The default `.env` value `KSHER_PRIVATE_KEY_DIR=./ksher_pay` already points to this folder.
 
 ## Send Notification
 
