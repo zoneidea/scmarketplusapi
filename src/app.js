@@ -7,6 +7,7 @@ const firestoreRoutes = require("./routes/firestore.routes");
 const paymentRoutes = require("./routes/payment.routes");
 const createTransactionPaymentRoutes = require("./routes/createTransactionPayment.routes");
 const boothLockRoutes = require("./routes/boothLock.routes");
+const checkTimeoutRoutes = require("./routes/checkTimeout.routes");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 
 const app = express();
@@ -27,6 +28,8 @@ app.use("/CreateTransactionPayment", createTransactionPaymentRoutes);
 app.use("/api/payments/create-transaction", createTransactionPaymentRoutes);
 app.use("/CallbackPaymentNotifyURL", paymentRoutes);
 app.use("/api/payments/callback", paymentRoutes);
+app.use("/CheckTimeout", checkTimeoutRoutes);
+app.use("/api/check-timeout", checkTimeoutRoutes);
 app.use(
   "/uat/CreateTransactionPayment",
   (req, res, next) => {
@@ -58,6 +61,22 @@ app.use(
     next();
   },
   paymentRoutes
+);
+app.use(
+  "/uat/CheckTimeout",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  checkTimeoutRoutes
+);
+app.use(
+  "/api/uat/check-timeout",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  checkTimeoutRoutes
 );
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/firestore", firestoreRoutes);
