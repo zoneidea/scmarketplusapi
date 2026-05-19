@@ -1,6 +1,7 @@
 const os = require("os");
 
 const { getPool } = require("../config/mysql");
+const boothLockService = require("./boothLock.service");
 const notificationService = require("./notification.service");
 
 const CONTROLLER = "CheckTimeout";
@@ -259,6 +260,7 @@ const runCheckTimeout = async ({ databaseProfile } = {}) => {
   try {
     const expiredBookingCount = await updateExpiredBookings(connection);
     const errorBookingCount = await updateErroredOrders(connection);
+    const clearedFirestoreLocks = await boothLockService.expireOldBoothLocks();
     const warningPayment = await processWarningNotifications(
       connection,
       ip,
@@ -274,6 +276,7 @@ const runCheckTimeout = async ({ databaseProfile } = {}) => {
       data: {
         updatedExpiredBookings: expiredBookingCount,
         updatedOrderErrors: errorBookingCount,
+        clearedFirestoreLocks,
         "เตือนก่อนหมดเวลาชำระเงิน": warningPayment,
         "เตือนหมดเวลาชำระเงิน": warningTimeout,
         "เตือน Booth หลุดจอง": warningInterest,
