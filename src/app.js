@@ -8,6 +8,7 @@ const paymentRoutes = require("./routes/payment.routes");
 const createTransactionPaymentRoutes = require("./routes/createTransactionPayment.routes");
 const boothLockRoutes = require("./routes/boothLock.routes");
 const checkTimeoutRoutes = require("./routes/checkTimeout.routes");
+const cartItemRoutes = require("./routes/cartItem.routes");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 
 const app = express();
@@ -30,6 +31,9 @@ app.use("/CallbackPaymentNotifyURL", paymentRoutes);
 app.use("/api/payments/callback", paymentRoutes);
 app.use("/CheckTimeout", checkTimeoutRoutes);
 app.use("/api/check-timeout", checkTimeoutRoutes);
+app.use("/GetCartItem", cartItemRoutes);
+app.use("/api/cart-items", cartItemRoutes);
+app.use("/api/cart/items", cartItemRoutes);
 app.use(
   "/uat/CreateTransactionPayment",
   (req, res, next) => {
@@ -77,6 +81,30 @@ app.use(
     next();
   },
   checkTimeoutRoutes
+);
+app.use(
+  "/uat/GetCartItem",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  cartItemRoutes
+);
+app.use(
+  "/api/uat/cart-items",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  cartItemRoutes
+);
+app.use(
+  "/api/uat/cart/items",
+  (req, res, next) => {
+    req.databaseProfile = "uat";
+    next();
+  },
+  cartItemRoutes
 );
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/firestore", firestoreRoutes);

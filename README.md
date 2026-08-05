@@ -37,6 +37,48 @@ npm run check
 - `PATCH /api/booth-locks/:boothId/:date`
 - `DELETE /api/booth-locks/:boothId/:date`
 - `POST /api/booth-locks/expire-old`
+- `GET /GetCartItem?member_id=:memberId`
+- `GET /api/cart-items?member_id=:memberId`
+- `GET /api/cart/items?member_id=:memberId`
+- `GET /uat/GetCartItem?member_id=:memberId`
+- `GET /api/uat/cart-items?member_id=:memberId`
+- `GET /api/uat/cart/items?member_id=:memberId`
+
+## Get Cart Items
+
+The Node.js cart endpoint keeps the legacy PHP response fields. Send the member ID
+as a query parameter.
+
+```bash
+curl "http://localhost:3000/GetCartItem?member_id=1"
+```
+
+Successful response contract:
+
+```json
+{
+  "status": "success",
+  "message": "",
+  "data": {
+    "Cart": [
+      {
+        "booking_id": "G32507000029",
+        "bu_Name": "Building A",
+        "mi_Name": "Market",
+        "create_date": "2026-08-05 10:00:00",
+        "status_id": "2",
+        "status_name": "Pending",
+        "checked": false,
+        "booking_detail": []
+      }
+    ],
+    "Charge": []
+  }
+}
+```
+
+Errors use HTTP `400` for a missing `member_id` and `500` for unexpected failures.
+Request, response, and error logs are written to `logs/get-cart-item.log`.
 
 ## Payment Callback
 
