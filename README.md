@@ -135,3 +135,15 @@ curl -X PATCH http://localhost:3000/api/firestore/users/user-001 \
   -H "Content-Type: application/json" \
   -d '{"displayName":"Test User"}'
 ```
+
+## Daily full database backup to Google Drive
+
+Authenticated cron endpoint: `POST` or `GET /api/admin/backups/database` with
+`Authorization: Bearer <BACKUP_API_TOKEN>`. Status: `GET /api/admin/backups/status`.
+Full dumps are compressed, AES-256-GCM encrypted, uploaded to monthly Drive folders,
+and verified. No Drive backup is deleted. Repeated calls on the same Bangkok date
+reuse a verified backup. Configure an external cron at 02:00 Asia/Bangkok.
+
+See [setup, API contract, OAuth, locking impact, and restore instructions](docs/database-backup.md).
+**Configure OAuth credentials and encryption/token secrets before use.** The dump
+uses a global read lock to include MyISAM consistently; writes wait during the dump.

@@ -5,3 +5,7 @@ node_modules/
 npm-debug.log*
 firebase-service-account*.json
 sc-market-plus-firebase.json
+
+.backups/
+.backup-secrets/
+*.sql.gz.enc

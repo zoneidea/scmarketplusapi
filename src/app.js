@@ -11,6 +11,8 @@ const checkTimeoutRoutes = require("./routes/checkTimeout.routes");
 const cartItemRoutes = require("./routes/cartItem.routes");
 const { notFound, errorHandler } = require("./middleware/error.middleware");
 
+const { backupRouter } = require("./routes/backup.routes");
+
 const app = express();
 
 const captureRawBody = (req, res, buf) => {
@@ -24,6 +26,7 @@ app.use(express.json({ limit: "1mb", verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 app.use(express.text({ type: "*/*", limit: "1mb", verify: captureRawBody }));
 
+app.use("/api/admin/backups", backupRouter());
 app.use("/health", healthRoutes);
 app.use("/CreateTransactionPayment", createTransactionPaymentRoutes);
 app.use("/api/payments/create-transaction", createTransactionPaymentRoutes);
