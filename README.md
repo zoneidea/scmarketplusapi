@@ -146,4 +146,4 @@ reuse a verified backup. Configure an external cron at 02:00 Asia/Bangkok.
 
 See [setup, API contract, OAuth, locking impact, and restore instructions](docs/database-backup.md).
 **Configure OAuth credentials and encryption/token secrets before use.** The dump
-uses mysql2 directly (no mysqldump binary) and a global read lock to include MyISAM consistently; writes wait during the dump.
+uses mysql2 directly (no mysqldump binary) and table read locks to include MyISAM consistently; writes wait during the dump.

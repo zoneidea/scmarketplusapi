@@ -8,22 +8,28 @@ function literal(value) {
   return "'" + String(value).replace(/'/g, "''") + "'";
 }
 
-// The read lock protects both MyISAM and InnoDB, including concurrent schema changes.
+// Lock all base tables together for a consistent MyISAM and InnoDB snapshot.
 // Keep one connection alive until every row and object definition has been streamed.
 async function* sqlDump(config, signal) {
   signal?.throwIfAborted();
   const connection = mysql.createConnection({ ...config.mysql, charset: 'utf8mb4',
     supportBigNumbers: true, bigNumberStrings: true, dateStrings: true });
-  connection.on('error', () => {});
-  const abort = () => connection.destroy();
+  // Metadata reads use a separate connection: LOCK TABLES restricts the data connection.
+  const metadata = mysql.createConnection({ ...config.mysql, charset: 'utf8mb4', dateStrings: true });
+  metadata.on('error', () => {});
+  let lockConnectionLost = false;
+  connection.on('error', () => { lockConnectionLost = true; });
+  connection.on('end', () => { lockConnectionLost = true; });
+  const abort = () => { connection.destroy(); metadata.destroy(); };
   signal?.addEventListener('abort', abort, { once: true });
   const db = identifier(config.database);
-  const query = async (sql, values) => {
+  const query = async (sql, values, target = metadata) => {
     signal?.throwIfAborted();
+    if (lockConnectionLost) throw Object.assign(new Error('Database lock connection lost'), { code: 'BACKUP_LOCK_LOST' });
     let onAbort;
     try {
       return await Promise.race([
-        connection.promise().query(sql, values).then(([rows]) => rows),
+        target.promise().query(sql, values).then(([rows]) => rows),
         new Promise((resolve, reject) => {
           onAbort = () => reject(new Error('Database dump aborted'));
           signal?.addEventListener('abort', onAbort, { once: true });
@@ -34,15 +40,23 @@ async function* sqlDump(config, signal) {
   };
   try {
     await query('SET SESSION time_zone = \'+00:00\'');
-    await query('FLUSH TABLES WITH READ LOCK');
+    await query('SET SESSION time_zone = \'+00:00\'', undefined, connection);
+    const listObjects = () => query('SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME', [config.database]);
+    const objects = await listObjects();
+    const tables = objects.filter(o => o.TABLE_TYPE === 'BASE TABLE');
+    const views = objects.filter(o => o.TABLE_TYPE === 'VIEW');
+    if (tables.length + views.length !== objects.length) throw new Error('Unsupported database object type; backup stopped');
+    if (tables.length) await query('LOCK TABLES ' + tables.map(t => `${db}.${identifier(t.TABLE_NAME)} READ`).join(', '), undefined, connection);
+    const checkObjects = async () => {
+      if (JSON.stringify(await listObjects()) !== JSON.stringify(objects)) {
+        throw Object.assign(new Error('Database object list changed during backup'), { code: 'BACKUP_SCHEMA_CHANGED' });
+      }
+    };
+    await checkObjects();
     const sourceMode = (await query('SELECT @@SESSION.sql_mode AS mode'))[0].mode;
     const dataMode = "SET SQL_MODE='NO_BACKSLASH_ESCAPES,NO_AUTO_VALUE_ON_ZERO';\n";
     const createDb = (await query(`SHOW CREATE DATABASE ${db}`))[0]['Create Database'];
     yield `-- SCMarket full database backup (mysql2)\nSET NAMES utf8mb4;\nSET @OLD_SQL_MODE=@@SQL_MODE;\nSET SQL_MODE='NO_BACKSLASH_ESCAPES,NO_AUTO_VALUE_ON_ZERO';\nSET @OLD_TIME_ZONE=@@TIME_ZONE;\nSET TIME_ZONE='+00:00';\nSET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS;\nSET FOREIGN_KEY_CHECKS=0;\n${createDb.replace(/^CREATE DATABASE /, 'CREATE DATABASE IF NOT EXISTS ')};\nUSE ${db};\n`;
-    const objects = await query('SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME', [config.database]);
-    const tables = objects.filter(o => o.TABLE_TYPE === 'BASE TABLE');
-    const views = objects.filter(o => o.TABLE_TYPE === 'VIEW');
-    if (tables.length + views.length !== objects.length) throw new Error('Unsupported database object type; backup stopped');
     for (const table of tables) {
       const name = identifier(table.TABLE_NAME);
       const columns = await query('SELECT COLUMN_NAME, DATA_TYPE, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION', [config.database, table.TABLE_NAME]);
@@ -109,15 +123,16 @@ async function* sqlDump(config, signal) {
         yield `SET TIME_ZONE=${literal(definition.time_zone || '+00:00')};\nDROP ${type} IF EXISTS ${name};\n` + emitObject(definition[createKey], definition.sql_mode) + "SET TIME_ZONE='+00:00';\n";
       }
     }
+    await checkObjects();
     yield 'SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;\nSET TIME_ZONE=@OLD_TIME_ZONE;\nSET SQL_MODE=@OLD_SQL_MODE;\n';
   } catch (error) {
     if (signal?.aborted) throw new Error('Database dump aborted');
     const code = /^[A-Z0-9_]+$/.test(error.code || '') ? ` (${error.code})` : '';
     throw new Error(`Node database dump failed${code}; check database permissions, connection and supported objects`);
   } finally {
-    // Closing the socket releases the global lock on success, failure and cancellation.
+    // Closing the socket releases the table locks on success, failure and cancellation.
     signal?.removeEventListener('abort', abort);
-    connection.destroy();
+    connection.destroy(); metadata.destroy();
   }
 }
 module.exports = { sqlDump, identifier, literal };

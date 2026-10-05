@@ -23,10 +23,17 @@ test('native dump restores tables, exact values, generated columns, views and st
   const name = 'scbackup_test_' + crypto.randomBytes(6).toString('hex');
   assert.match(name, /^scbackup_test_[a-f0-9]+$/);
   const connection = await mysql.createConnection({host:'127.0.0.1',user:'root',password:''});
+  const user = 'scb_' + crypto.randomBytes(6).toString('hex');
+  const password = crypto.randomBytes(24).toString('hex');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(),'scbackup-native-'));
   try {
     await connection.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4`);
     await connection.query(`USE \`${name}\``);
+    await connection.query("CREATE USER ?@'localhost' IDENTIFIED BY ?", [user,password]);
+    await connection.query(`GRANT ALL PRIVILEGES ON \`${name}\`.* TO ?@'localhost'`, [user]);
+    await connection.changeUser({user,password,database:name});
+    const [grants] = await connection.query('SHOW GRANTS');
+    assert.ok(!JSON.stringify(grants).includes('RELOAD'));
     await connection.query('CREATE TABLE data (id BIGINT UNSIGNED PRIMARY KEY, amount DECIMAL(30,10), txt LONGTEXT, rawdata BLOB, dt DATETIME, stamp TIMESTAMP NULL, bits BIT(12), n INT, generated INT AS (n+1) STORED) ENGINE=InnoDB');
     await connection.query("CREATE TABLE latin_text (txt VARCHAR(100) CHARACTER SET latin1 DEFAULT 'a\\\\b')");
     await connection.query("INSERT INTO latin_text VALUES ('café')");
@@ -42,15 +49,20 @@ test('native dump restores tables, exact values, generated columns, views and st
     await connection.query('CREATE EVENT sample_event ON SCHEDULE EVERY 1 DAY DISABLE DO SELECT 1');
     const select = 'SELECT CAST(id AS CHAR) id,CAST(amount AS CHAR) amount,HEX(txt) txt,HEX(rawdata) rawdata,CAST(dt AS CHAR) dt,UNIX_TIMESTAMP(stamp) stamp,HEX(bits) bits,n,generated FROM data';
     const [before] = await connection.query(select);
-    const cfg={database:name,mysql:{host:'127.0.0.1',user:'root',password:'',database:name},key:crypto.randomBytes(32)};
+    const cfg={database:name,mysql:{host:'127.0.0.1',user,password,database:name},key:crypto.randomBytes(32)};
     const control = new AbortController();
     const abortedDump = sqlDump(cfg, control.signal);
-    await abortedDump.next(); // The generator holds a global read lock at this point.
+    await abortedDump.next(); // The generator holds table read locks at this point.
     control.abort();
     await assert.rejects(abortedDump.next(), /aborted/);
     await connection.query('SET SESSION lock_wait_timeout=2');
     await connection.query('INSERT INTO audit VALUES (3)');
     await connection.query('DELETE FROM audit WHERE id=3');
+    const changingDump = sqlDump(cfg, new AbortController().signal);
+    await changingDump.next();
+    await connection.query('CREATE TABLE added_during_backup (id INT)');
+    await assert.rejects(async () => { for await (const chunk of changingDump) { void chunk; } }, /BACKUP_SCHEMA_CHANGED/);
+    await connection.query('DROP TABLE added_during_backup');
     const artifact=await createArchive(cfg,dir,new AbortController().signal);
     const gz=path.join(dir,'restore.gz'); await decryptArchive(artifact.path,gz,cfg.key);
     const sql=zlib.gunzipSync(await fs.readFile(gz));
@@ -71,7 +83,13 @@ test('native dump restores tables, exact values, generated columns, views and st
     const [trigger]=await connection.query('SELECT @backup_test_seen AS v'); assert.equal(trigger[0].v,9);
     const [events]=await connection.query('SHOW EVENTS'); assert.equal(events.length,1); assert.equal(events[0].Status,'DISABLED');
   } finally {
-    await connection.query(`DROP DATABASE IF EXISTS \`${name}\``);
-    await connection.end(); await fs.rm(dir,{recursive:true,force:true});
+    const cleanup = await mysql.createConnection({host:'127.0.0.1',user:'root',password:''});
+    try {
+      await cleanup.query(`DROP DATABASE IF EXISTS \`${name}\``);
+      await cleanup.query("DROP USER IF EXISTS ?@'localhost'", [user]);
+    } finally {
+      await cleanup.end();
+      await connection.end(); await fs.rm(dir,{recursive:true,force:true});
+    }
   }
 });
