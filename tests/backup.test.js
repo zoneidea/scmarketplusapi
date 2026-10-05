@@ -8,7 +8,7 @@ const zlib = require('node:zlib');
 const { EventEmitter } = require('node:events');
 const express = require('express');
 const { backupConfig, bangkokDate } = require('../src/config/backup');
-const { createArchive, decryptArchive, checksums, optionValue } = require('../src/services/backup/archive');
+const { createArchive, decryptArchive, checksums } = require('../src/services/backup/archive');
 const { BackupDrive } = require('../src/services/backup/drive');
 const { runBackup } = require('../src/services/backup/job');
 const { backupRouter } = require('../src/routes/backup.routes');
@@ -27,15 +27,14 @@ test('Bangkok date crosses UTC day and month; invalid config fails closed', () =
   assert.equal(bangkokDate(new Date('2026-09-30T19:00:00Z')), '2026-10-01');
   assert.throws(() => backupConfig({}), /BACKUP_API_TOKEN/);
   assert.throws(() => backupConfig({ BACKUP_API_TOKEN: 't'.repeat(40) }), /ENCRYPTION/);
-  assert.equal(optionValue('x"\\\n#'), '"x\\"\\\\\\n#"');
 });
 
-test('dump streams encrypted gzip, credentials removed, tampering rejected', async t => {
+test('SQL stream encrypts gzip, creates no credential file, rejects tampering', async t => {
   const directory = await temporary(t);
-  const executable = path.join(directory, 'fake-dump');
-  await fs.writeFile(executable, '#!/usr/bin/env node\nprocess.stdout.write("CREATE TABLE sample (id INT);\\nINSERT INTO sample VALUES (1);\\n");\n', { mode: 0o700 });
-  const cfg = { ...config(directory), dumpBinary: executable };
-  const artifact = await createArchive(cfg, directory, new AbortController().signal);
+  const cfg = config(directory);
+  const artifact = await createArchive(cfg, directory, new AbortController().signal, async function* () {
+    yield 'CREATE TABLE sample (id INT);\nINSERT INTO sample VALUES (1);\n';
+  });
   assert.equal((await checksums(artifact.path)).sha256, artifact.sha256);
   await assert.rejects(fs.access(path.join(directory, 'mysql.cnf')));
   assert.equal((await fs.stat(artifact.path)).mode & 0o777, 0o600);
@@ -50,11 +49,11 @@ test('dump streams encrypted gzip, credentials removed, tampering rejected', asy
   await assert.rejects(fs.access(badOutput));
 });
 
-test('dump failure never publishes an archive and removes plaintext credentials', async t => {
+test('SQL stream failure never publishes an archive or plaintext credentials', async t => {
   const directory = await temporary(t);
-  const executable = path.join(directory, 'failed-dump');
-  await fs.writeFile(executable, '#!/usr/bin/env node\nprocess.stdout.write("partial SQL"); process.exitCode = 2;\n', { mode: 0o700 });
-  await assert.rejects(createArchive({ ...config(directory), dumpBinary: executable }, directory, new AbortController().signal), /dump failed/);
+  await assert.rejects(createArchive(config(directory), directory, new AbortController().signal, async function* () {
+    yield 'partial SQL'; throw new Error('dump failed');
+  }), /dump failed/);
   await assert.rejects(fs.access(path.join(directory, 'backup.sql.gz.enc')));
   await assert.rejects(fs.access(path.join(directory, 'mysql.cnf')));
 });
@@ -160,14 +159,12 @@ test('cron routes require header token and reject query tokens', async t => {
   assert.equal(calls, 2);
 });
 
-test('dump timeout terminates even a child that ignores SIGTERM', async t => {
+test('dump cancellation removes incomplete archive', async t => {
   const directory = await temporary(t);
-  const executable = path.join(directory, 'hanging-dump');
-  await fs.writeFile(executable, '#!/usr/bin/env node\nprocess.on("SIGTERM",()=>{}); setInterval(()=>{},1000);\n', { mode: 0o700 });
   const control = new AbortController();
-  const timer = setTimeout(() => control.abort(), 500);
-  try {
-    await assert.rejects(createArchive({ ...config(directory), dumpBinary: executable }, directory, control.signal));
-    await assert.rejects(fs.access(path.join(directory, 'mysql.cnf')));
-  } finally { clearTimeout(timer); }
+  await assert.rejects(createArchive(config(directory), directory, control.signal, async function* () {
+    yield 'partial SQL'; control.abort(); control.signal.throwIfAborted();
+  }));
+  await assert.rejects(fs.access(path.join(directory, 'backup.sql.gz.enc')));
+  await assert.rejects(fs.access(path.join(directory, 'backup.sql.gz.enc.partial')));
 });

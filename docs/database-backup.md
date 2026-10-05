@@ -38,9 +38,9 @@ Successful response example:
 ## Host requirements and consistency
 
 1. Node API's existing dependencies are sufficient; no new npm package is added.
-2. Install a compatible `mariadb-dump`/`mysqldump`. Set `BACKUP_DUMP_BINARY` to its absolute path if it is not on the service PATH. MariaDB hosts should use a matching MariaDB client.
-3. The dump account needs SELECT, SHOW VIEW, TRIGGER, EVENT, access to routines, and privileges for global read locks (`--lock-all-tables`; version-specific privileges may include RELOAD). Check grants on the deployment host. No new table or schema migration is required.
-4. **The database mixes InnoDB and MyISAM. Dump uses a global read lock, which blocks writes across the database server for the duration of the dump.** The lock is released by the dump process before uploading to Drive. Schedule in a quiet period and measure duration before production use. Do not change to `--single-transaction` while MyISAM tables require a consistent snapshot.
+2. Dumps stream directly through the existing `mysql2` dependency. No executable or `BACKUP_DUMP_BINARY` is needed; an existing value is ignored. Spatial columns and non-table/view objects such as sequences are rejected rather than silently backed up incorrectly.
+3. The dump account needs SELECT, SHOW VIEW, TRIGGER, EVENT, access to routines, and privileges for global read locks (`FLUSH TABLES WITH READ LOCK`; version-specific privileges may include RELOAD). Check grants on the deployment host. No new table or schema migration is required.
+4. **The database mixes InnoDB and MyISAM. The Node exporter uses a global read lock, which blocks writes across the database server for the duration of the dump.** The lock is released by closing the dedicated MySQL connection before uploading to Drive. Schedule in a quiet period and measure duration before production use. A transaction alone cannot provide a consistent snapshot for MyISAM.
 5. Permit outbound HTTPS to Google OAuth and Drive APIs. Use HTTPS for the public backup endpoint.
 6. Keep `.backups` and `.backup-secrets` outside any public static/document root and persistent across releases. The repository ignores them. Use a protected, persistent path through the environment variables.
 7. Provision local disk for compressed encrypted dumps. Successful dumps are removed locally after verified upload; failed uploads retain the encrypted archive for retry. Monitor and manually manage local abandoned jobs. Nothing removes old Drive backups.
@@ -90,7 +90,7 @@ npm run backup:decrypt -- full_scmarketplus_2026-10-05.sql.gz.enc restored.sql.g
 
 The decrypt helper authenticates before publishing the output and refuses to overwrite an existing destination. It does not restore automatically.
 
-**Restore only into an isolated test server first.** Dump uses `--databases`, so SQL contains CREATE DATABASE/USE for the original database and can replace existing tables on the target server. Do not pipe it into a live server to test.
+**Restore only into an isolated test server first.** The SQL contains CREATE DATABASE/USE for the original database and can replace existing tables on the target server. Do not pipe it into a live server to test.
 
 ```bash
 gunzip -c restored.sql.gz | mariadb --host=ISOLATED_RESTORE_HOST --user=RESTORE_USER --password
@@ -100,10 +100,20 @@ Validate table counts, sample row counts, views/triggers/routines and applicatio
 
 ## Tests
 
-`npm run test:backup` uses mocked Drive/dump transports and temporary files, with no Google uploads or production database writes. Local integration testing should run a real dump into encrypted local storage and restore into an isolated test server before production activation.
+`npm run test:backup` uses mocked Drive and SQL streams and temporary files, with no Google uploads or production database writes. Local integration testing should run a real dump into encrypted local storage and restore into an isolated test server before production activation.
 
 References:
 - https://developers.google.com/workspace/drive/api/guides/manage-uploads
 - https://developers.google.com/workspace/drive/api/guides/handle-errors
 - https://developers.google.com/identity/protocols/oauth2/native-app
 - https://mariadb.com/docs/server/clients-and-utilities/backup-restore-and-import-clients/mariadb-dump
+
+## Native Node exporter
+
+All reads use a dedicated connection under a global read lock. The entire export streams through gzip and encryption; plaintext SQL is not written to disk. Rows use explicit columns, skip generated columns, preserve numeric precision and encode byte values as hex. Definitions retain their original DEFINER; restoring routines, views, triggers and events may require corresponding accounts and elevated privileges on the isolated restore server. The backup account must be able to see all these objects and their SHOW CREATE definitions; restricted metadata visibility cannot guarantee a complete backup. Restore using the mysql/mariadb command-line client, which understands DELIMITER. Event definitions retain their enabled state, so keep event_scheduler OFF on the isolated restore server.
+
+To run the real local restore fixture (disposable `scbackup_test_*` database, local root with empty password): `BACKUP_INTEGRATION_MYSQL=/absolute/path/to/mysql npm run test:backup`. The CLI is only used by this restore test, never by the backup API.
+
+### Deploying the Node exporter update
+
+Upload `src/services/backup/sql-dump.js`, `src/services/backup/archive.js`, and `src/config/backup.js`, preserving these paths. Restart the Node application. Existing OAuth files, encryption key, cron endpoint, and Authorization header remain valid. `BACKUP_DUMP_BINARY` is no longer read and may be removed from the host environment. No additional npm packages are needed. SQL is buffered in roughly 64 KiB batches before compression (a single larger row may exceed that size), keeping memory bounded without a compression operation for each row.

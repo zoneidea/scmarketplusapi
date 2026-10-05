@@ -20,7 +20,6 @@ function backupConfig(env = process.env) {
     keyId: crypto.createHash('sha256').update(key).digest('hex').slice(0, 16),
     directory: path.resolve(env.BACKUP_DIRECTORY || '.backups'),
     logDirectory: path.resolve(env.LOG_DIRECTORY || 'logs'),
-    dumpBinary: env.BACKUP_DUMP_BINARY || 'mysqldump',
     oauthClientFile: path.resolve(env.BACKUP_DRIVE_CLIENT_FILE || '.backup-secrets/drive-client.json'),
     oauthTokenFile: path.resolve(env.BACKUP_DRIVE_TOKEN_FILE || '.backup-secrets/drive-token.json'),
     mysql: {
